@@ -32,22 +32,33 @@ def send_modbus_request(ser, address, function, start_reg, count):
 
     
 def parse_data(response):
-    if len(response) < 5:
+    if len(response) < 15:  # Минимум 15 байт для 6 регистров (3 акселерометр + 3 гироскоп)
+        print("Invalid response: Not enough data")
         return None, None, None, None, None, None
 
-    data = response[3:-2]
-    values = struct.unpack(">hhh", data[:6])  # Чтение 3 пар значений (16 бит каждое)
+    try:
+        # Извлечение данных из ответа
+        data = response[3:-2]  # Пропускаем заголовок и CRC
+        values = struct.unpack(">hhhhhh", data[:12])  # Читаем 6 регистров (акселерометр и гироскоп)
 
-    # Масштабирование данных
-    accX = values[0] / 1000.0   # Акселерометр в G
-    accY = values[1] / 1000.0
-    accZ = values[2] / 1000.0
+        # Масштабирование акселерометра
+        accX = values[0] / 1000.0   # Акселерометр в G
+        accY = values[1] / 1000.0
+        accZ = values[2] / 1000.0
 
-    gyroX = values[3] / 32768.0 * 2000.0  # Гироскоп в град/сек
-    gyroY = values[4] / 32768.0 * 2000.0
-    gyroZ = values[5] / 32768.0 * 2000.0
+        # Масштабирование гироскопа
+        gyroX = values[3] / 32768.0 * 2000.0  # Гироскоп в град/сек
+        gyroY = values[4] / 32768.0 * 2000.0
+        gyroZ = values[5] / 32768.0 * 2000.0
 
-    return accX, accY, accZ, gyroX, gyroY, gyroZ
+        # Вывод для проверки
+        print(f"Raw Values: {values}")
+        return accX, accY, accZ, gyroX, gyroY, gyroZ
+
+    except struct.error as e:
+        print(f"Data unpacking error: {e}")
+        return None, None, None, None, None, None
+
 
 def print_data(accX, accY, accZ, gyroX, gyroY, gyroZ):
     """
@@ -68,8 +79,19 @@ def print_data(accX, accY, accZ, gyroX, gyroY, gyroZ):
     print(f"Gyro (°/s):")
     print(f"    X: {gyroX:>8.3f}°/s  |   Y: {gyroY:>8.3f}°/s  |   Z: {gyroZ:>8.3f}°/s")
     print("=" * 50)
+    print()
+    print()
 
 
+from collections import deque
+
+# Инициализация буферов
+accX_buf, accY_buf, accZ_buf = deque(maxlen=10), deque(maxlen=10), deque(maxlen=10)
+gyroX_buf, gyroY_buf, gyroZ_buf = deque(maxlen=10), deque(maxlen=10), deque(maxlen=10)
+
+def moving_average(new_value, buffer):
+    buffer.append(new_value)
+    return sum(buffer) / len(buffer)
 
 if __name__ == "__main__":
     try:
@@ -77,8 +99,17 @@ if __name__ == "__main__":
             print(f"Connected to {PORT} at {BAUD_RATE} baud.")
             while True:
                 response = send_modbus_request(ser, DEVICE_ADDRESS, 0x03, 0x30, 6)  # Чтение 6 регистров
+
                 if response:
                     accX, accY, accZ, gyroX, gyroY, gyroZ = parse_data(response)
+                    # Получаем данные и применяем фильтр
+                    accX = moving_average(accX, accX_buf)
+                    accY = moving_average(accY, accY_buf)
+                    accZ = moving_average(accZ, accZ_buf)
+                    gyroX = moving_average(gyroX, gyroX_buf)
+                    gyroY = moving_average(gyroY, gyroY_buf)
+                    gyroZ = moving_average(gyroZ, gyroZ_buf)
+
                     print_data(accX, accY, accZ, gyroX, gyroY, gyroZ)
                 else:
                     print("No response.")
